@@ -1,0 +1,847 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trazador de rutas</title>
+<meta name="description" content="Traza la ruta de red hacia cualquier IP o dominio desde sondas ubicadas en Bolivia y la muestra en el mapa con los tiempos de cada salto.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='5' cy='18' r='3' fill='%2363e6be'/%3E%3Ccircle cx='19' cy='6' r='3' fill='%2363e6be'/%3E%3Cpath d='M7 16 17 8' stroke='%2363e6be' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root {
+  --fondo: #080b10;
+  --panel: #0d1219;
+  --panel-2: #131a23;
+  --linea: #1e2733;
+  --texto: #e8eef5;
+  --tenue: #8794a5;
+  --apagado: #4d5967;
+  --acento: #63e6be;
+  --rapido: #63e6be;
+  --medio: #f7c95c;
+  --lento: #ff7b6e;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: "Instrument Sans", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+p { margin: 0; }
+button, select { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+.app { display: grid; grid-template-columns: minmax(360px, 440px) 1fr; height: 100dvh; }
+.panel { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--linea); }
+
+.marca { display: flex; align-items: center; gap: 10px; padding: 20px 22px 0; }
+.marca svg { width: 26px; height: 26px; color: var(--acento); }
+.marca h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+
+.buscador { padding: 16px 22px 0; }
+.campo {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel-2); border: 1px solid var(--linea); border-radius: 12px;
+  padding: 6px 6px 6px 14px;
+  transition: border-color .2s, box-shadow .2s;
+}
+.campo:focus-within { border-color: var(--acento); box-shadow: 0 0 0 4px rgba(99, 230, 190, .1); }
+.campo input {
+  flex: 1; min-width: 0; background: none; border: 0; outline: 0;
+  color: var(--texto); font-family: var(--mono); font-size: 14px;
+}
+.campo input::placeholder { color: var(--apagado); }
+.accion {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 36px; padding: 0 14px; border: 0; border-radius: 8px;
+  background: var(--acento); color: #06231b; font-weight: 600; font-size: 14px;
+  transition: transform .12s, background .2s;
+}
+.accion:hover { background: #7df0cd; }
+.accion:active { transform: scale(.96); }
+.accion svg { width: 15px; height: 15px; }
+.accion.detener { background: transparent; color: var(--lento); box-shadow: inset 0 0 0 1px rgba(255, 123, 110, .45); }
+.accion.detener:hover { background: rgba(255, 123, 110, .1); }
+
+.salida { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; color: var(--tenue); }
+.salida select {
+  appearance: none; flex: 1; min-width: 0; height: 34px; padding: 0 32px 0 12px;
+  border: 1px solid var(--linea); border-radius: 9px; font-size: 13.5px; color: var(--texto);
+  background: var(--panel-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238794a5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center / 15px;
+  transition: border-color .2s;
+}
+.salida select:hover { border-color: var(--apagado); }
+
+.progreso { height: 2px; margin: 12px 22px 0; border-radius: 2px; overflow: hidden; background: transparent; }
+.corriendo .progreso { background: var(--linea); }
+.corriendo .progreso::after {
+  content: ""; display: block; width: 35%; height: 100%; background: var(--acento);
+  animation: barrido 1.1s ease-in-out infinite;
+}
+@keyframes barrido { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+
+.aviso {
+  display: flex; gap: 9px; align-items: flex-start;
+  margin: 12px 22px 0; padding: 10px 12px; border-radius: 10px;
+  background: rgba(255, 123, 110, .08); border: 1px solid rgba(255, 123, 110, .3);
+  color: #ffc4bd; font-size: 13.5px;
+  animation: aparecer .25s ease-out;
+}
+.aviso svg { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--lento); }
+
+.resumen { padding: 16px 22px 0; animation: aparecer .3s ease-out; }
+.destino { font-family: var(--mono); font-size: 12.5px; color: var(--tenue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.destino b { color: var(--texto); font-weight: 500; }
+.cifras { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 12px; border: 1px solid var(--linea); border-radius: 12px; }
+.cifra { padding: 11px 14px; min-width: 0; }
+.cifra + .cifra { border-left: 1px solid var(--linea); }
+.cifra span { display: block; font-size: 11.5px; color: var(--tenue); }
+.cifra strong { display: block; margin-top: 2px; font-family: var(--mono); font-size: 21px; font-weight: 500; letter-spacing: -0.02em; white-space: nowrap; }
+.cifra small { margin-left: 3px; font-size: 11.5px; font-weight: 400; color: var(--tenue); }
+.paises { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 12px; font-size: 13.5px; }
+.paises svg { width: 14px; height: 14px; color: var(--apagado); }
+.paises:empty { display: none; }
+
+.lista { flex: 1; min-height: 0; overflow-y: auto; margin-top: 16px; border-top: 1px solid var(--linea); scrollbar-width: thin; scrollbar-color: var(--linea) transparent; }
+.saltos { list-style: none; margin: 0; padding: 8px 0 12px; }
+.saltos:empty { display: none; }
+.salto {
+  position: relative; display: grid; grid-template-columns: 30px 1fr auto; gap: 12px;
+  padding: 10px 22px; cursor: default;
+  animation: aparecer .32s ease-out both;
+  transition: background .15s;
+}
+.salto.ubicado { cursor: pointer; }
+.salto.ubicado:hover, .salto.activo { background: var(--panel-2); }
+.salto::before { content: ""; position: absolute; left: 36.5px; top: 0; bottom: 0; width: 1px; background: var(--linea); }
+.salto:first-child::before { top: 24px; }
+.salto:last-child::before { bottom: calc(100% - 24px); }
+.salto:only-child::before { display: none; }
+.num {
+  position: relative; z-index: 1; display: grid; place-items: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--panel); border: 1px solid var(--tenue);
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+}
+.salto.mudo .num { border-style: dashed; border-color: var(--apagado); color: var(--apagado); }
+.salto.llegada .num { background: var(--acento); border-color: var(--acento); color: #06231b; }
+.cuerpo { min-width: 0; padding-top: 4px; }
+.lugar { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.salto.mudo .lugar, .salto.privado .lugar, .salto.incierto .lugar { color: var(--tenue); font-weight: 400; }
+.dir, .red { font-size: 12.5px; color: var(--tenue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dir { font-family: var(--mono); font-size: 12px; margin-top: 2px; }
+.dir .host { color: var(--apagado); }
+.red:empty, .dir:empty { display: none; }
+.hueso { display: inline-block; height: 12px; border-radius: 4px; background: var(--linea); animation: latir 1s ease-in-out infinite alternate; }
+@keyframes latir { to { opacity: .4; } }
+
+.tiempo { text-align: right; padding-top: 3px; min-width: 78px; }
+.tiempo strong { font-family: var(--mono); font-size: 16px; font-weight: 500; color: var(--nivel, var(--tenue)); }
+.tiempo strong small { margin-left: 2px; font-size: 11px; font-weight: 400; opacity: .75; }
+.barra { display: block; height: 3px; margin: 5px 0 4px auto; width: 78px; border-radius: 3px; background: var(--linea); overflow: hidden; }
+.barra i { display: block; height: 100%; width: var(--ancho, 0%); border-radius: 3px; background: var(--nivel, var(--tenue)); transition: width .5s cubic-bezier(.2, .8, .2, 1); }
+.muestras { font-family: var(--mono); font-size: 11px; color: var(--apagado); }
+
+.espera { padding: 8px 0; }
+.espera p { padding: 10px 22px 4px; font-size: 13.5px; color: var(--tenue); }
+.espera .salto { animation: none; }
+.espera .num { border-color: var(--linea); }
+
+.vacio { padding: 34px 22px; animation: aparecer .3s ease-out; }
+.vacio svg { width: 100%; max-width: 250px; height: auto; display: block; color: var(--apagado); }
+.vacio p { margin-top: 18px; color: var(--tenue); max-width: 32ch; }
+.ejemplos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.ejemplos button {
+  padding: 6px 11px; border-radius: 8px; border: 1px solid var(--linea); background: none;
+  font-family: var(--mono); font-size: 12.5px; color: var(--texto);
+  transition: border-color .2s, color .2s, transform .12s;
+}
+.ejemplos button:hover { border-color: var(--acento); color: var(--acento); }
+.ejemplos button:active { transform: scale(.96); }
+
+.nota { padding: 10px 22px 14px; border-top: 1px solid var(--linea); font-size: 12px; color: var(--apagado); }
+.nota a { color: var(--tenue); }
+
+@keyframes aparecer { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+#mapa { height: 100%; background: var(--fondo); }
+.leaflet-container { font-family: inherit; background: var(--fondo); }
+.leaflet-tile-pane { filter: sepia(.5) hue-rotate(178deg) saturate(1.5) brightness(.72) contrast(1.12); }
+.leaflet-control-attribution { background: rgba(8, 11, 16, .7) !important; color: var(--apagado) !important; font-size: 10.5px; }
+.leaflet-control-attribution a { color: var(--tenue) !important; }
+.leaflet-bar { border: 1px solid var(--linea) !important; border-radius: 10px !important; overflow: hidden; box-shadow: none !important; }
+.leaflet-bar a { background: var(--panel) !important; color: var(--texto) !important; border-bottom-color: var(--linea) !important; }
+.leaflet-bar a:hover { background: var(--panel-2) !important; }
+.leaflet-popup-content-wrapper { background: var(--panel); color: var(--texto); border: 1px solid var(--linea); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, .5); }
+.leaflet-popup-tip { background: var(--panel); border: 1px solid var(--linea); box-shadow: none; }
+.leaflet-popup-content { margin: 12px 14px; font-size: 13.5px; line-height: 1.45; }
+.rotulo {
+  padding: 3px 8px; border: 1px solid var(--linea); border-radius: 7px; box-shadow: none;
+  background: var(--panel); color: var(--texto); font-size: 12px; font-weight: 500;
+}
+.rotulo::before { display: none; }
+.globo b { display: block; font-weight: 600; }
+.globo .red { margin-bottom: 6px; }
+.globo .fila { display: flex; gap: 14px; justify-content: space-between; font-family: var(--mono); font-size: 12px; color: var(--tenue); }
+.globo .fila span:last-child { color: var(--texto); }
+
+.nodo {
+  position: absolute; transform: translate(-50%, -50%);
+  display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px;
+  border-radius: 13px; background: var(--panel); border: 1.5px solid var(--acento);
+  color: var(--texto); font-family: var(--mono); font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 0 0 4px rgba(99, 230, 190, .14);
+  transition: box-shadow .2s;
+}
+.nodo:hover { box-shadow: 0 0 0 7px rgba(99, 230, 190, .2); }
+.nodo.origen { border-color: var(--texto); box-shadow: 0 0 0 4px rgba(232, 238, 245, .12); }
+.nodo.punto { min-width: 14px; width: 14px; height: 14px; padding: 0; background: var(--texto); }
+.nodo.destino { background: var(--acento); color: #06231b; }
+.nodo.meta { min-width: 14px; width: 14px; height: 14px; padding: 0; background: transparent; border-style: dashed; box-shadow: none; }
+.nodo.meta::after {
+  content: ""; position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--acento);
+  animation: onda 1.6s ease-out infinite;
+}
+@keyframes onda { to { transform: scale(3.2); opacity: 0; } }
+
+.ruta { stroke: var(--acento); stroke-width: 2.25; fill: none; stroke-linecap: round; }
+.ruta-halo { stroke: var(--acento); stroke-width: 9; stroke-opacity: .12; fill: none; stroke-linecap: round; }
+.ruta-pendiente { stroke: var(--tenue); stroke-width: 1.5; stroke-opacity: .6; stroke-dasharray: 3 7; fill: none; animation: fluir 1.2s linear infinite; }
+.paquete { fill: #fff; stroke: var(--acento); stroke-width: 3; stroke-opacity: .5; }
+@keyframes fluir { to { stroke-dashoffset: -20; } }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: 36dvh 1fr; }
+  .panel { order: 2; border-right: 0; border-top: 1px solid var(--linea); overflow-y: auto; }
+  .lista { flex: none; overflow: visible; }
+  #mapa { order: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="panel">
+    <header class="marca">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="5" cy="18.5" r="2.5"/><circle cx="19" cy="5.5" r="2.5"/><circle cx="12.5" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+        <path d="M7 16.7 10.9 13.3M14.2 10.5 17 7.6"/>
+      </svg>
+      <h1>Trazador de rutas</h1>
+    </header>
+
+    <form class="buscador" id="formulario" autocomplete="off" novalidate>
+      <div class="campo">
+        <input id="entrada" type="text" inputmode="url" spellcheck="false" placeholder="IP o dominio" aria-label="IP o dominio a rastrear">
+        <button class="accion" id="boton" type="submit"></button>
+      </div>
+      <div class="salida">
+        <label for="origen">Sale desde</label>
+        <select id="origen">
+          <option value="26210">AXS Bolivia</option>
+          <option value="6568">Entel</option>
+          <option value="27828">UMSA</option>
+          <option value="">Cualquier red de Bolivia</option>
+        </select>
+      </div>
+    </form>
+    <div class="progreso" aria-hidden="true"></div>
+
+    <div class="aviso" id="aviso" role="alert" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      <span id="avisoTexto"></span>
+    </div>
+
+    <section class="resumen" id="resumen" hidden>
+      <p class="destino" id="destino"></p>
+      <div class="cifras">
+        <div class="cifra"><span>Saltos</span><strong id="cifraSaltos">0</strong></div>
+        <div class="cifra"><span>Latencia</span><strong id="cifraLatencia">–</strong></div>
+        <div class="cifra"><span>Distancia</span><strong id="cifraDistancia">–</strong></div>
+      </div>
+      <div class="paises" id="paises"></div>
+    </section>
+
+    <div class="lista" id="lista">
+      <div class="vacio" id="vacio">
+        <svg viewBox="0 0 250 70" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+          <path d="M22 50C60 50 62 20 98 20s40 30 76 30 24-22 54-28" stroke-dasharray="2 7"/>
+          <circle cx="16" cy="50" r="6"/><circle cx="98" cy="20" r="4"/><circle cx="174" cy="50" r="4"/>
+          <circle cx="234" cy="20" r="6" stroke="#63e6be"/><circle cx="234" cy="20" r="2" fill="#63e6be" stroke="none"/>
+        </svg>
+        <p>Pega una IP o un dominio para ver su ruta desde Bolivia, salto por salto.</p>
+        <div class="ejemplos" id="ejemplos">
+          <button type="button">www.lostiempos.com</button>
+          <button type="button">8.8.8.8</button>
+          <button type="button">1.1.1.1</button>
+        </div>
+      </div>
+      <div class="espera" id="espera" hidden>
+        <p id="esperaTexto"></p>
+        <div class="salto"><span class="num"></span><div class="cuerpo"><span class="hueso" style="width:150px"></span></div><div class="tiempo"></div></div>
+        <div class="salto"><span class="num"></span><div class="cuerpo"><span class="hueso" style="width:110px"></span></div><div class="tiempo"></div></div>
+        <div class="salto"><span class="num"></span><div class="cuerpo"><span class="hueso" style="width:170px"></span></div><div class="tiempo"></div></div>
+      </div>
+      <ol class="saltos" id="saltos"></ol>
+    </div>
+    <p class="nota">Medido con sondas de <a href="https://globalping.io" target="_blank" rel="noopener">Globalping</a>. La ubicación de cada salto es aproximada.</p>
+  </aside>
+  <main id="mapa" aria-label="Mapa de la ruta"></main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $ = (selector) => document.querySelector(selector);
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const API = 'https://api.globalping.io/v1/measurements';
+const ICONOS = {
+  trazar: 'M5 12h14M13 6l6 6-6 6',
+  detener: 'M7 7h10v10H7z',
+  flecha: 'M5 12h14M14 7l5 5-5 5',
+};
+const sinMovimiento = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const nombresPais = new Intl.DisplayNames(['es-419'], { type: 'region' });
+
+const estado = { saltos: new Map(), origen: null, destino: null, control: null, llego: false };
+const marcadores = new Map();
+const cacheGeo = new Map();
+let cuadro = 0;
+let volando = false;
+
+function el(etiqueta, clase, texto) {
+  const nodo = document.createElement(etiqueta);
+  if (clase) nodo.className = clase;
+  if (texto != null) nodo.textContent = texto;
+  return nodo;
+}
+
+function icono(trazo) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2.2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const camino = document.createElementNS(SVG_NS, 'path');
+  camino.setAttribute('d', trazo);
+  svg.append(camino);
+  return svg;
+}
+
+function pais(codigo) {
+  try { return codigo ? nombresPais.of(codigo) : ''; } catch { return codigo; }
+}
+function lugar(geo) {
+  return [geo.ciudad, pais(geo.pais)].filter(Boolean).join(', ') || 'Ubicación desconocida';
+}
+function ms(valor) {
+  return valor == null ? '∗' : valor < 1 ? '<1' : String(Math.round(valor));
+}
+function nivel(valor) {
+  return valor < 60 ? 'var(--rapido)' : valor < 160 ? 'var(--medio)' : 'var(--lento)';
+}
+function esPrivada(ip) {
+  const [a, b] = ip.split('.').map(Number);
+  return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+}
+function pausa(milisegundos, senal) {
+  return new Promise((resolver, rechazar) => {
+    const reloj = setTimeout(resolver, milisegundos);
+    senal.addEventListener('abort', () => { clearTimeout(reloj); rechazar(new DOMException('Detenido', 'AbortError')); }, { once: true });
+  });
+}
+
+/* ---------- Medición (Globalping) y ubicación de cada salto ---------- */
+function errorDeApi(codigo, datos, nombreRed) {
+  const tipo = datos && datos.error && datos.error.type;
+  const detalle = JSON.stringify((datos && datos.error && datos.error.params) || '');
+  if (tipo === 'no_probes_found') return `La sonda de ${nombreRed} no está conectada ahora. Elige otra red de salida.`;
+  if (tipo === 'validation_error' && detalle.includes('private')) return 'Esa dirección es privada y no se puede rastrear desde internet.';
+  if (tipo === 'validation_error') return 'Escribe una IP o un dominio válido, por ejemplo 8.8.8.8.';
+  if (codigo === 429) return 'Se alcanzó el límite de mediciones por hora. Intenta de nuevo más tarde.';
+  return 'El servicio de medición no respondió. Intenta de nuevo en un momento.';
+}
+
+async function crearMedicion(destino, asn, nombreRed, senal) {
+  const ubicacion = asn ? { country: 'BO', asn: Number(asn) } : { country: 'BO' };
+  const respuesta = await fetch(API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: senal,
+    body: JSON.stringify({
+      type: 'mtr', target: destino, limit: 1, inProgressUpdates: true,
+      locations: [ubicacion], measurementOptions: { protocol: 'ICMP', packets: 3 },
+    }),
+  });
+  const datos = await respuesta.json().catch(() => null);
+  if (!respuesta.ok) throw new Error(errorDeApi(respuesta.status, datos, nombreRed));
+  return datos.id;
+}
+
+async function esperarMedicion(id, senal, alAvanzar) {
+  for (let intento = 0; intento < 90; intento++) {
+    await pausa(700, senal);
+    const respuesta = await fetch(`${API}/${id}`, { signal: senal });
+    if (!respuesta.ok) continue;
+    const datos = await respuesta.json();
+    const resultado = datos.results && datos.results[0];
+    if (resultado) alAvanzar(resultado);
+    if (datos.status !== 'in-progress') return resultado;
+  }
+  throw new Error('La medición tardó demasiado. Intenta de nuevo.');
+}
+
+function separarRed(texto) {
+  return (texto || '').replace(/^AS\d+\s*/, '');
+}
+
+async function consultarGeo(ip) {
+  try {
+    const respuesta = await fetch(`https://ipinfo.io/${ip}/json`, { signal: AbortSignal.timeout(6000) });
+    if (respuesta.ok) {
+      const j = await respuesta.json();
+      if (j.loc) {
+        const [lat, lon] = j.loc.split(',').map(Number);
+        return { ciudad: j.city || '', pais: j.country || '', lat, lon, red: separarRed(j.org) };
+      }
+    }
+  } catch {}
+  try {
+    const respuesta = await fetch(`https://ipwho.is/${ip}`, { signal: AbortSignal.timeout(6000) });
+    if (respuesta.ok) {
+      const j = await respuesta.json();
+      if (j.success) return { ciudad: j.city || '', pais: j.country_code || '', lat: j.latitude, lon: j.longitude, red: (j.connection && (j.connection.org || j.connection.isp)) || '' };
+    }
+  } catch {}
+  return null;
+}
+
+function geolocalizar(ip) {
+  if (!cacheGeo.has(ip)) {
+    const consulta = consultarGeo(ip);
+    cacheGeo.set(ip, consulta);
+    // un fallo de red no debe quedar guardado para siempre
+    consulta.then((geo) => { if (!geo) cacheGeo.delete(ip); });
+  }
+  return cacheGeo.get(ip);
+}
+
+/* ---------- Mapa ---------- */
+const VISTA_INICIAL = [-8, -62];
+const mapa = L.map('mapa', { zoomControl: false, worldCopyJump: true, minZoom: 2 }).setView(VISTA_INICIAL, 3);
+L.control.zoom({ position: 'bottomright' }).addTo(mapa);
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas';
+L.tileLayer(`${ESRI}/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 12, attribution: 'Mapa &copy; Esri' }).addTo(mapa);
+L.tileLayer(`${ESRI}/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 12 }).addTo(mapa);
+const capa = L.layerGroup().addTo(mapa);
+
+function arco(a, b, pasos = 40) {
+  const r = Math.PI / 180;
+  const [la1, lo1, la2, lo2] = [a[0] * r, a[1] * r, b[0] * r, b[1] * r];
+  const d = 2 * Math.asin(Math.sqrt(Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin((lo2 - lo1) / 2) ** 2));
+  if (d < 1e-6) return [a, b];
+  const puntos = [];
+  for (let i = 0; i <= pasos; i++) {
+    const f = i / pasos;
+    const A = Math.sin((1 - f) * d) / Math.sin(d);
+    const B = Math.sin(f * d) / Math.sin(d);
+    const x = A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
+    const y = A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
+    const z = A * Math.sin(la1) + B * Math.sin(la2);
+    puntos.push([Math.atan2(z, Math.hypot(x, y)) / r, Math.atan2(y, x) / r]);
+  }
+  return puntos;
+}
+
+// evita el salto de 360° cuando la ruta cruza el antimeridiano
+function continuo(puntos) {
+  for (let i = 1; i < puntos.length; i++) {
+    while (puntos[i][1] - puntos[i - 1][1] > 180) puntos[i][1] -= 360;
+    while (puntos[i][1] - puntos[i - 1][1] < -180) puntos[i][1] += 360;
+  }
+  return puntos;
+}
+
+function kilometros(a, b) {
+  const r = Math.PI / 180;
+  const h = Math.sin((b[0] - a[0]) * r / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin((b[1] - a[1]) * r / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+
+// Los saltos seguidos en la misma ciudad se juntan en un solo punto del mapa
+function agruparPuntos() {
+  const puntos = [];
+  const sumar = (geo, salto) => {
+    const ultimo = puntos[puntos.length - 1];
+    const mismo = ultimo && Math.abs(ultimo.lat - geo.lat) < 0.01 && Math.abs(ultimo.lon - geo.lon) < 0.01;
+    const punto = mismo ? ultimo : { lat: geo.lat, lon: geo.lon, geo, saltos: [], origen: false };
+    if (!mismo) puntos.push(punto);
+    if (salto) punto.saltos.push(salto); else punto.origen = true;
+  };
+  if (estado.origen) sumar(estado.origen, null);
+  [...estado.saltos.values()].sort((a, b) => a.n - b.n).forEach((s) => { if (s.geo) sumar(s.geo, s); });
+  return puntos;
+}
+
+function globo(punto) {
+  const caja = el('div', 'globo');
+  caja.append(el('b', '', lugar(punto.geo)));
+  if (punto.geo.red) caja.append(el('p', 'red', punto.geo.red));
+  if (punto.origen) {
+    const fila = el('div', 'fila');
+    fila.append(el('span', '', 'Origen'), el('span', '', 'sonda de medición'));
+    caja.append(fila);
+  }
+  punto.saltos.forEach((s) => {
+    const fila = el('div', 'fila');
+    fila.append(el('span', '', `${s.n} · ${s.ip}`), el('span', '', s.prom == null ? '∗' : `${ms(s.prom)} ms`));
+    caja.append(fila);
+  });
+  return caja;
+}
+
+function pintarMapa(final) {
+  cancelAnimationFrame(cuadro);
+  capa.clearLayers();
+  marcadores.clear();
+  const puntos = agruparPuntos();
+  const destinoIp = estado.destino && estado.destino.ip;
+
+  const recorrido = continuo(puntos.flatMap((p, i) => (i ? arco([puntos[i - 1].lat, puntos[i - 1].lon], [p.lat, p.lon]) : [])));
+  if (recorrido.length) {
+    L.polyline(recorrido, { className: 'ruta-halo', interactive: false }).addTo(capa);
+    L.polyline(recorrido, { className: 'ruta', interactive: false }).addTo(capa);
+  }
+
+  const meta = estado.destino && estado.destino.geo;
+  if (meta && !estado.llego) {
+    const ultimo = puntos[puntos.length - 1];
+    if (ultimo && !final) {
+      L.polyline(continuo(arco([ultimo.lat, ultimo.lon], [meta.lat, meta.lon])), { className: 'ruta-pendiente', interactive: false }).addTo(capa);
+    }
+    L.marker([meta.lat, meta.lon], { icon: L.divIcon({ className: '', iconSize: [0, 0], html: '<span class="nodo meta"></span>' }), interactive: false, keyboard: false }).addTo(capa);
+  }
+
+  puntos.forEach((p) => {
+    const numeros = p.saltos.map((s) => s.n);
+    const etiqueta = !numeros.length ? '' : numeros.length === 1 ? String(numeros[0]) : `${numeros[0]}–${numeros[numeros.length - 1]}`;
+    const esDestino = p.saltos.some((s) => s.ip === destinoIp);
+    const clases = ['nodo', p.origen && 'origen', !etiqueta && 'punto', esDestino && 'destino'].filter(Boolean).join(' ');
+    const marcador = L.marker([p.lat, p.lon], {
+      icon: L.divIcon({ className: '', iconSize: [0, 0], html: `<span class="${clases}">${etiqueta}</span>` }),
+      zIndexOffset: esDestino ? 500 : 0,
+    }).bindPopup(() => globo(p), { closeButton: false, offset: [0, -10] }).addTo(capa);
+    const rotulo = p.origen ? estado.origen.rotulo : esDestino ? p.geo.ciudad : '';
+    if (rotulo) marcador.bindTooltip(rotulo, { permanent: true, direction: 'right', offset: [16, 0], className: 'rotulo' });
+    marcador.on('click', () => { if (p.saltos[0]) resaltar(p.saltos[0].n, true); });
+    p.saltos.forEach((s) => marcadores.set(s.n, marcador));
+  });
+
+  if (final && recorrido.length > 1 && !sinMovimiento) animarPaquete(recorrido);
+  return puntos;
+}
+
+// Mueve la cámara una sola vez, antes de dibujar: una línea agregada en pleno
+// vuelo del mapa queda mal proyectada hasta que la animación termina.
+function encuadrar(limites) {
+  return new Promise((resolver) => {
+    if (!limites.length) return resolver();
+    const opciones = { padding: [70, 70], maxZoom: 7 };
+    const aplicar = (animado) => {
+      if (limites.length === 1) mapa.setView(limites[0], 5, { animate: animado });
+      else if (animado) mapa.flyToBounds(limites, { ...opciones, duration: 0.8 });
+      else mapa.fitBounds(limites, { ...opciones, animate: false });
+    };
+    const listo = () => { clearTimeout(reloj); mapa.off('moveend', listo); resolver(); };
+    // con la pestaña en segundo plano la animación no avanza: se encuadra de golpe
+    const reloj = setTimeout(() => { mapa.off('moveend', listo); mapa.stop(); aplicar(false); resolver(); }, 1500);
+    mapa.once('moveend', listo);
+    aplicar(!sinMovimiento);
+  });
+}
+
+function animarPaquete(recorrido) {
+  const paquete = L.circleMarker(recorrido[0], { radius: 4, className: 'paquete', interactive: false }).addTo(capa);
+  const duracion = Math.min(7000, 1800 + recorrido.length * 14);
+  const inicio = performance.now();
+  const paso = (ahora) => {
+    const x = (((ahora - inicio) % duracion) / duracion) * (recorrido.length - 1);
+    const i = Math.floor(x);
+    const a = recorrido[i];
+    const b = recorrido[Math.min(i + 1, recorrido.length - 1)];
+    if (!volando) paquete.setLatLng([a[0] + (b[0] - a[0]) * (x - i), a[1] + (b[1] - a[1]) * (x - i)]);
+    cuadro = requestAnimationFrame(paso);
+  };
+  cuadro = requestAnimationFrame(paso);
+}
+
+/* ---------- Panel ---------- */
+function resaltar(n, desplazar) {
+  document.querySelectorAll('.salto.activo').forEach((fila) => fila.classList.remove('activo'));
+  const fila = $(`#saltos .salto[data-n="${n}"]`);
+  if (!fila) return;
+  fila.classList.add('activo');
+  if (desplazar) fila.scrollIntoView({ block: 'nearest', behavior: sinMovimiento ? 'auto' : 'smooth' });
+}
+
+function pintarSalto(s) {
+  let fila = $(`#saltos .salto[data-n="${s.n}"]`);
+  if (!fila) {
+    fila = el('li', 'salto');
+    fila.dataset.n = s.n;
+    fila.addEventListener('click', () => {
+      const marcador = marcadores.get(s.n);
+      if (!marcador) return;
+      resaltar(s.n, false);
+      volando = true;
+      mapa.once('moveend', () => { volando = false; marcador.openPopup(); });
+      mapa.flyTo(marcador.getLatLng(), Math.max(mapa.getZoom(), 6), { duration: 0.7 });
+    });
+    $('#saltos').append(fila);
+  }
+  const sinRespuesta = !s.ip;
+  fila.className = ['salto', sinRespuesta && 'mudo', s.privada && 'privado', s.incierta && 'incierto', s.geo && 'ubicado', estado.destino && s.ip === estado.destino.ip && 'llegada', fila.classList.contains('activo') && 'activo'].filter(Boolean).join(' ');
+
+  const cuerpo = el('div', 'cuerpo');
+  const titulo = el('p', 'lugar');
+  if (sinRespuesta) titulo.textContent = 'Sin respuesta';
+  else if (s.privada) titulo.textContent = 'Red privada';
+  else if (s.geo) titulo.textContent = lugar(s.geo);
+  else if (s.incierta) { titulo.textContent = 'Ubicación incierta'; titulo.title = 'Responde demasiado rápido para estar donde indica la base de datos'; }
+  else titulo.textContent = 'Ubicación desconocida';
+  const direccion = el('p', 'dir');
+  if (s.ip) direccion.append(el('span', 'ip', s.ip));
+  if (s.host) { direccion.append(el('span', 'host', `  ${s.host}`)); direccion.title = s.host; }
+  cuerpo.append(titulo, direccion, el('p', 'red', s.red || ''));
+
+  const tiempo = el('div', 'tiempo');
+  if (s.prom != null) {
+    tiempo.style.setProperty('--nivel', nivel(s.prom));
+    const cifra = el('strong', '', ms(s.prom));
+    cifra.append(el('small', '', 'ms'));
+    const barra = el('span', 'barra');
+    barra.append(el('i'));
+    tiempo.append(cifra, barra, el('span', 'muestras', s.tiempos.map(ms).join(' · ')));
+  }
+  fila.replaceChildren(el('span', 'num', s.n), cuerpo, tiempo);
+}
+
+function ajustarBarras() {
+  const maximo = Math.max(1, ...[...estado.saltos.values()].map((s) => s.prom || 0));
+  estado.saltos.forEach((s) => {
+    const barra = $(`#saltos .salto[data-n="${s.n}"] .barra i`);
+    if (barra) barra.style.setProperty('--ancho', `${Math.max(4, (s.prom / maximo) * 100)}%`);
+  });
+}
+
+function pintarResumen(puntos) {
+  const saltos = [...estado.saltos.values()].sort((a, b) => a.n - b.n);
+  $('#cifraSaltos').textContent = saltos.length;
+
+  const ultimo = [...saltos].reverse().find((s) => s.prom != null);
+  const latencia = $('#cifraLatencia');
+  latencia.textContent = ultimo ? ms(ultimo.prom) : '–';
+  if (ultimo) latencia.append(el('small', '', 'ms'));
+
+  const distancia = $('#cifraDistancia');
+  let km = 0;
+  for (let i = 1; i < puntos.length; i++) km += kilometros([puntos[i - 1].lat, puntos[i - 1].lon], [puntos[i].lat, puntos[i].lon]);
+  distancia.textContent = km >= 1 ? Math.round(km).toLocaleString('es-BO') : '–';
+  if (km >= 1) distancia.append(el('small', '', 'km'));
+
+  const lista = [];
+  puntos.forEach((p) => { const nombre = pais(p.geo.pais); if (nombre && lista[lista.length - 1] !== nombre) lista.push(nombre); });
+  const paises = $('#paises');
+  paises.replaceChildren();
+  lista.forEach((nombre, i) => {
+    if (i) paises.append(icono(ICONOS.flecha));
+    paises.append(el('span', '', nombre));
+  });
+}
+
+function refrescar(final) {
+  pintarResumen(pintarMapa(final));
+  ajustarBarras();
+}
+
+function avisar(mensaje) {
+  $('#avisoTexto').textContent = mensaje || '';
+  $('#aviso').hidden = !mensaje;
+}
+
+function ponerBoton(corriendo) {
+  const boton = $('#boton');
+  boton.classList.toggle('detener', corriendo);
+  boton.replaceChildren(icono(corriendo ? ICONOS.detener : ICONOS.trazar), document.createTextNode(corriendo ? 'Detener' : 'Trazar'));
+  $('#app').classList.toggle('corriendo', corriendo);
+}
+
+function limpiarDestino(valor) {
+  return valor.trim().replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '');
+}
+
+function terminar(control) {
+  if (estado.control !== control) return;
+  estado.control = null;
+  ponerBoton(false);
+  $('#espera').hidden = true;
+  if (estado.saltos.size) refrescar(true);
+  else {
+    $('#vacio').hidden = false;
+    $('#resumen').hidden = true;
+    cancelAnimationFrame(cuadro);
+    capa.clearLayers();
+    mapa.setView(VISTA_INICIAL, 3);
+  }
+}
+
+function detener() {
+  const control = estado.control;
+  if (!control) return;
+  control.abort();
+  terminar(control);
+}
+
+function fijarOrigen(sonda, redElegida) {
+  if (estado.origen || !sonda) return;
+  estado.origen = { lat: sonda.latitude, lon: sonda.longitude, ciudad: sonda.city, pais: sonda.country, red: sonda.network, rotulo: redElegida || sonda.network };
+  $('#esperaTexto').textContent = `Midiendo desde ${sonda.city}, por la red de ${sonda.network}`;
+  refrescar(false);
+}
+
+// La señal recorre como mucho unos 100 km por cada milisegundo de ida y vuelta.
+// Si la base de datos ubica el salto más lejos que eso, la ubicación es falsa
+// (pasa con las IP anycast y con rangos registrados en otro continente).
+function ubicacionCreible(geo, salto) {
+  const validos = salto.tiempos.filter((t) => t != null);
+  if (!estado.origen || !validos.length) return true;
+  const alcance = Math.min(...validos) * 100 + 100;
+  return kilometros([estado.origen.lat, estado.origen.lon], [geo.lat, geo.lon]) <= alcance;
+}
+
+function leerSaltos(resultado) {
+  return (resultado.hops || []).map((salto, i) => {
+    const ip = salto.resolvedAddress || null;
+    const estadisticas = salto.stats || {};
+    const tiempos = (salto.timings || []).map((t) => t.rtt);
+    while (ip && tiempos.length < (estadisticas.total || 0)) tiempos.push(null);
+    const privada = ip ? esPrivada(ip) : false;
+    const nombre = salto.resolvedHostname;
+    return {
+      n: i + 1, ip, privada, tiempos,
+      prom: ip && estadisticas.rcv > 0 ? estadisticas.avg : null,
+      host: nombre && nombre !== ip && nombre !== '_gateway' ? nombre : null,
+      geo: null,
+    };
+  });
+}
+
+async function mostrar(resultado, destino, control) {
+  const medicion = resultado.result;
+  if (medicion.status !== 'finished') {
+    const salida = (medicion.rawOutput || '').toLowerCase();
+    throw new Error(/not found|resolve|enotfound/.test(salida)
+      ? `No se encontró «${destino}». Revisa que esté bien escrito.`
+      : 'La sonda no pudo completar la medición. Intenta de nuevo.');
+  }
+  const saltos = leerSaltos(medicion);
+  const ipDestino = medicion.resolvedAddress || destino;
+  estado.destino = { ip: ipDestino, geo: null };
+  const llegada = saltos.find((s) => s.ip === ipDestino);
+
+  // primero se ubican todos los saltos, así la cámara se mueve una sola vez
+  $('#esperaTexto').textContent = 'Ubicando cada salto en el mapa';
+  const consultas = saltos.filter((s) => s.ip && !s.privada).map((s) => geolocalizar(s.ip).then((geo) => {
+    const creible = geo && ubicacionCreible(geo, s);
+    Object.assign(s, { geo: creible ? geo : null, red: geo ? geo.red : '', incierta: Boolean(geo) && !creible });
+  }));
+  if (!llegada && !esPrivada(ipDestino)) consultas.push(geolocalizar(ipDestino).then((geo) => { estado.destino.geo = geo; }));
+  await Promise.allSettled(consultas);
+  if (control.signal.aborted) throw new DOMException('Detenido', 'AbortError');
+
+  const linea = $('#destino');
+  linea.replaceChildren(el('b', '', destino));
+  if (destino !== ipDestino) linea.append(`  ${ipDestino}`);
+  $('#espera').hidden = true;
+  $('#resumen').hidden = false;
+
+  const limites = [estado.origen, ...saltos.map((s) => s.geo), estado.destino.geo].filter(Boolean).map((geo) => [geo.lat, geo.lon]);
+  await encuadrar(limites);
+
+  for (const s of saltos) {
+    if (control.signal.aborted) throw new DOMException('Detenido', 'AbortError');
+    estado.saltos.set(s.n, s);
+    if (s.ip === ipDestino) estado.llego = true;
+    pintarSalto(s);
+    refrescar(false);
+    await pausa(sinMovimiento ? 0 : 90, control.signal);
+  }
+  if (!estado.llego) avisar('El destino no respondió a la medición. La ruta se muestra hasta el último salto que contestó.');
+}
+
+async function trazar(valor) {
+  const destino = limpiarDestino(valor);
+  if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/i.test(destino)) {
+    return avisar('Escribe una IP o un dominio válido, por ejemplo 8.8.8.8.');
+  }
+  detener();
+  avisar('');
+  $('#entrada').value = destino;
+  Object.assign(estado, { origen: null, destino: null, llego: false });
+  estado.saltos.clear();
+  $('#saltos').replaceChildren();
+  $('#vacio').hidden = true;
+  $('#resumen').hidden = true;
+  $('#esperaTexto').textContent = 'Buscando una sonda en Bolivia';
+  $('#espera').hidden = false;
+  cancelAnimationFrame(cuadro);
+  capa.clearLayers();
+  ponerBoton(true);
+
+  const control = new AbortController();
+  estado.control = control;
+  const selector = $('#origen');
+  const nombreRed = selector.options[selector.selectedIndex].textContent;
+  try {
+    const id = await crearMedicion(destino, selector.value, nombreRed, control.signal);
+    const resultado = await esperarMedicion(id, control.signal, (parcial) => fijarOrigen(parcial.probe, selector.value && nombreRed));
+    await mostrar(resultado, destino, control);
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    if (estado.control === control) {
+      avisar(error instanceof TypeError ? 'No se pudo conectar con el servicio de medición. Revisa tu conexión a internet.' : error.message);
+    }
+  } finally {
+    terminar(control);
+  }
+}
+
+$('#formulario').addEventListener('submit', (evento) => {
+  evento.preventDefault();
+  if (estado.control) detener(); else trazar($('#entrada').value);
+});
+$('#entrada').addEventListener('input', () => avisar(''));
+$('#ejemplos').addEventListener('click', (evento) => {
+  if (evento.target.tagName === 'BUTTON') trazar(evento.target.textContent);
+});
+
+ponerBoton(false);
+const inicial = new URLSearchParams(location.search).get('destino');
+if (inicial) trazar(inicial); else $('#entrada').focus();
+</script>
+</body>
+</html>
